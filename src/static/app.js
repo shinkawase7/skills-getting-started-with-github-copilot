@@ -13,18 +13,47 @@ document.addEventListener("DOMContentLoaded", () => {
       // Clear loading message
       activitiesList.innerHTML = "";
 
+      // Reset activity select (keep default placeholder)
+      activitySelect.innerHTML = '<option value="">-- Select an activity --</option>';
+
+      // Normalize activities: support both object map and array
+      const entries = Array.isArray(activities)
+        ? activities.map(a => [a.name || a.title || "Unnamed", a])
+        : Object.entries(activities || {});
+
       // Populate activities list
-      Object.entries(activities).forEach(([name, details]) => {
+      entries.forEach(([name, details]) => {
         const activityCard = document.createElement("div");
         activityCard.className = "activity-card";
+        // store activity name for later reference (delete actions)
+        activityCard.dataset.activity = name;
 
-        const spotsLeft = details.max_participants - details.participants.length;
+        const participants = Array.isArray(details && details.participants) ? details.participants : [];
+
+        const maxParticipants = Number(details && details.max_participants) || 0;
+        let spotsLeft = maxParticipants - participants.length;
+        if (spotsLeft < 0) spotsLeft = 0;
+
+        const participantItems = participants.length > 0
+          ? participants.map(p => {
+              const display = (p && typeof p === "object") ? (p.name || p.email || JSON.stringify(p)) : p;
+              const escaped = escapeHtml(display || "");
+              // include a delete button next to each participant
+              return `<li>${escaped} <button class="delete-btn" data-email="${escaped}" aria-label="Remove participant">✖</button></li>`;
+            }).join("")
+          : "";
 
         activityCard.innerHTML = `
-          <h4>${name}</h4>
-          <p>${details.description}</p>
-          <p><strong>Schedule:</strong> ${details.schedule}</p>
+          <h4>${escapeHtml(name)}</h4>
+          <p>${escapeHtml(details && details.description || "")}</p>
+          <p><strong>Schedule:</strong> ${escapeHtml(details && details.schedule || "")}</p>
           <p><strong>Availability:</strong> ${spotsLeft} spots left</p>
+
+          <!-- Participants section -->
+          <div class="participants-section">
+            <h5>Participants</h5>
+            ${participantItems ? `<ul class="participants-list">${participantItems}</ul>` : `<p class="no-participants">No participants yet</p>`}
+          </div>
         `;
 
         activitiesList.appendChild(activityCard);
@@ -40,6 +69,50 @@ document.addEventListener("DOMContentLoaded", () => {
       console.error("Error fetching activities:", error);
     }
   }
+
+  // Delegate click events for delete buttons inside activities list
+  activitiesList.addEventListener("click", async (event) => {
+    const btn = event.target.closest && event.target.closest('.delete-btn');
+    if (!btn) return;
+
+    const li = btn.closest('li');
+    const activityCard = btn.closest('.activity-card');
+    if (!activityCard) return;
+
+    const activityName = activityCard.dataset.activity;
+    const email = btn.dataset.email;
+
+    if (!activityName || !email) return;
+
+    // Ask backend to unregister
+    try {
+      const response = await fetch(`/activities/${encodeURIComponent(activityName)}/participants?email=${encodeURIComponent(email)}`, {
+        method: 'DELETE',
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (response.ok) {
+        messageDiv.textContent = result.message || `Removed ${email}`;
+        messageDiv.className = 'success';
+        messageDiv.classList.remove('hidden');
+        // refresh activities list
+        fetchActivities();
+      } else {
+        messageDiv.textContent = result.detail || 'Failed to remove participant';
+        messageDiv.className = 'error';
+        messageDiv.classList.remove('hidden');
+      }
+
+      setTimeout(() => messageDiv.classList.add('hidden'), 4000);
+    } catch (err) {
+      console.error('Error removing participant:', err);
+      messageDiv.textContent = 'Failed to remove participant. Try again.';
+      messageDiv.className = 'error';
+      messageDiv.classList.remove('hidden');
+      setTimeout(() => messageDiv.classList.add('hidden'), 4000);
+    }
+  });
 
   // Handle form submission
   signupForm.addEventListener("submit", async (event) => {
@@ -62,6 +135,8 @@ document.addEventListener("DOMContentLoaded", () => {
         messageDiv.textContent = result.message;
         messageDiv.className = "success";
         signupForm.reset();
+        // refresh activities so the newly-registered participant appears
+        fetchActivities();
       } else {
         messageDiv.textContent = result.detail || "An error occurred";
         messageDiv.className = "error";
@@ -84,3 +159,14 @@ document.addEventListener("DOMContentLoaded", () => {
   // Initialize app
   fetchActivities();
 });
+
+// helper to escape HTML in participant names
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (s) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[s]));
+}
